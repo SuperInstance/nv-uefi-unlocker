@@ -8,9 +8,10 @@ BEFORE BOOTING THIS STICK
 2. Secure Boot is currently ENABLED on this machine (measured 2026-11-01).
    Disable Secure Boot in BIOS setup, or enrol/trust a self-signed EFI cert.
    The loader will not run with stock Secure Boot policy.
-3. Prefer dGPU-only display mode if the machine offers it (MyASUS / ProArt
-   Creator Hub GPU mode "Ultimate"). In hybrid mode some laptops lose the
-   unlock after OS handoff; verify with ssdiag either way.
+3. This laptop has NO MUX switch: hybrid output (Radeon iGPU drives the
+   panel) is the only display mode, and upstream's verified 28a1 run was
+   also done in hybrid mode. Some hybrid laptops lose the unlock after OS
+   handoff, so the ssdiag read-back below is mandatory, not optional.
 
 BOOT
 1. Copy the CONTENTS of this folder to the root of a FAT32 USB stick

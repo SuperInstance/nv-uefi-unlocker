@@ -37,13 +37,19 @@ device 3), with a field record of **1.7–1.9×** on 28a1 silicon
 
 Differences from that field bench, stated plainly:
 
-- Their 28a1 bench was an ASUS ROG G614JV left in **hybrid output mode**;
-  this machine is a PX13 with an **AMD iGPU** (theirs was Intel/NVIDIA).
-  Hybrid-mode behaviour is BIOS-specific — a third-party 28e0 report
-  (upstream issue #119) found hybrid entry can leave BAR0/MMIO unreadable on
-  some firmware while dGPU-only mode reads cleanly. **Prefer dGPU-only
-  display mode** (MyASUS / ProArt Creator Hub GPU mode, if offered) and
-  verify in-OS with `ssdiag` either way.
+- Their 28a1 bench was an ASUS ROG G614JV left in **hybrid output mode**,
+  and hybrid is the only mode this machine has: the PX13 HN7306's official
+  ASUS specification lists **no MUX switch and no Advanced Optimus** (checked
+  2026-11-01 against the ASUS UK tech-spec page for HN7306) — the internal
+  OLED is wired to the Radeon 890M. So upstream's "prefer dGPU-only" advice
+  is simply unavailable here, and the G614JV hybrid run is the governing
+  precedent. Two hybrid risks remain live and are handled by the test
+  protocol below, not by assumption: (a) a third-party 28e0 report
+  (upstream issue #119) found hybrid entry can leave BAR0/MMIO unreadable
+  on some BIOSes (Insyde, Acer) — the PX13's AMI BIOS is untested, and
+  `loader.log` is where that would show; (b) some MUX-less laptops lose
+  the unlock after OS handoff — the `ssdiag` + benchmark pair is how we
+  will know.
 - Sustained gains are bounded by this card's **55 W** limit — expect the
   microbenchmark gain, not a promise, and less under sustained load.
 
@@ -92,12 +98,80 @@ bash machines/proart-px13-4050/build.sh   # builds, verifies, assembles ./out/pr
 Then copy the contents of `out/proart-px13-4050-usb/` to a FAT32 stick root
 and follow [README-PROART.txt](README-PROART.txt).
 
+## Test protocol (the first real-machine run)
+
+Ordered so each step's evidence survives a failure at the next one.
+Read-back is the only success criterion at every stage.
+
+1. **Baseline (before any unlock attempt).** In WSL: `preflight.sh`, then
+   `bench_tensor.py --label stock`. Commit the JSON to `results/`.
+   Without a same-instrument baseline, an "unlocked" number proves nothing.
+2. **Preflight (Windows).** `preflight.ps1` — all hard checks PASS.
+3. **BIOS step (Casey, at the desk).** Disable Secure Boot. (There is no
+   GPU-mode step: this machine has no MUX — see above.)
+4. **Stick boot.** Restart (not Shut down) → one-time boot menu → USB →
+   Space/Enter at the version screen. Photograph the verdict lines if
+   they scroll; `loader.log` lands on the stick either way.
+5. **Windows read-back.** `ssdiag-x86_64-windows.exe` from the upstream
+   release: selectors must read back unlocked. Save its output.
+6. **Bench pair.** `bench_tensor.py --label unlocked` in the *same*
+   environment the baseline used, same sizes, same power state (AC,
+   same Windows power mode). Commit JSON + `loader.log` + ssdiag output
+   to `results/` as one evidence set.
+7. **Failure rule.** STOP/fault/stuck screen at any point: do **not**
+   retry in the session. Full power-off, stick out, normal boot, and the
+   log is analysed before any second attempt.
+
+## Open questions (this machine, specifically)
+
+| # | Question | Answered by |
+| --- | --- | --- |
+| Q1 | Does the transaction complete on the PX13's AMI BIOS in hybrid mode (BAR0 readable at entry)? | First stick boot; `loader.log` |
+| Q2 | Does the unlock survive Windows driver handoff on a MUX-less AMD-hybrid laptop? | `ssdiag` read-back in step 5 |
+| Q3 | Is the unlock visible to compute inside **WSL2** (Windows host driver owns the GPU there)? | Bench pair run in WSL; if WSL shows no gain while native Windows does, that is the answer, and it routes future 4050 AI work to native Windows/Linux boots |
+| Q4 | Which external port, if any, is wired to the dGPU (HDMI 2.1 vs USB4 DP)? A dGPU-wired external display would give the loader a direct GOP console. | Test with an external monitor + `loader.log` GOP notes |
+| Q5 | How much of the GEMM gain survives sustained load inside the 55 W envelope? | Timed bench at 8192 vs a longer soak variant |
+
+## R&D log
+
+- **2026-11-01** — Profile created. Hardware probed live (SSH/WSL +
+  Windows CIM/PnP + registry): device `28A1`, subsystem `1043:1ED3`,
+  VBIOS 95.07.44.00.63, bus 196, Secure Boot on. Loader built from source
+  (TX-verified, 121 tests green), family-40 assets generated from pinned
+  inputs, stick assembled and hash-verified. See "What was built" above.
+- **2026-11-01** — BDF pin format verified against loader source:
+  `parse_bdf()` in `loader/src/pci.rs` parses every field as **hex**
+  (`from_str_radix(_, 16)`), so bus 196 is pinned as `c4:00.0`. A decimal
+  pin would have matched nothing — the loader refuses to guess and skips,
+  which is safe but would have read as a mysterious no-op.
+- **2026-11-01** — MUX question closed by specification, not assumption:
+  ASUS's HN7306 spec lists no MUX/Advanced Optimus; hybrid-only. Docs and
+  protocol corrected accordingly (earlier text said "dGPU-only if offered"
+  — it is not offered).
+- **2026-11-01** — Tooling added: hardened `build.sh` (stage gates +
+  self-hash-check), `preflight.ps1` / `preflight.sh` (read-only,
+  expected-value checks), `bench_tensor.py` (FP16/BF16/TF32 GEMM,
+  FP32-accumulate — the exact paths the unlock governs).
+- **2026-11-01** — Rebuild determinism verified: a second full
+  `build.sh` run produced a stick **byte-identical** to the first
+  (all SHA-256 sums match, including BOOTX64.EFI `41a5ca8e…`). The
+  build is reproducible from source + pinned inputs, as designed.
+- **2026-11-01** — Stock baseline measured on the target in WSL2
+  (`results/2026-11-01-stock-baseline/`): FP16 21.4/23.7, BF16 25.1/24.4,
+  TF32 12.0/11.3 TFLOPS (4096³/8192³). Consistent with the half-rate cap;
+  the unlocked run now has something honest to be compared against.
+- **2026-11-01** — `preflight.ps1` caught by its own first run: Windows
+  PowerShell 5.1 reads BOM-less files as ANSI, so the UTF-8 em-dashes in
+  the first draft corrupted string literals and the script did not parse.
+  Fixed by making the script **pure ASCII** (also the right default for
+  any PS 5.1 tooling). Lesson recorded because it is exactly the kind of
+  bug that only a real run on the real shell finds.
+
 ## Casey-only steps (cannot be done remotely)
 
 1. Disable Secure Boot in BIOS setup (currently enabled), or enrol a
    self-signed cert.
-2. If available, set GPU mode to dGPU-only / "Ultimate" before the test boot.
-3. Boot the stick from the one-time boot menu, press Space/Enter, and after
+2. Boot the stick from the one-time boot menu, press Space/Enter, and after
    Windows loads run `ssdiag-x86_64-windows.exe` from the upstream release
    to read back the unlock state.
 
